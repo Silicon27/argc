@@ -17,6 +17,17 @@
 
 namespace argcpp {
 
+    template <auto T, typename Enum>
+    requires std::is_enum_v<Enum> and
+            // check if T is part of Enum
+             (std::ranges::any_of(std::array<Enum, 5>{Enum::FLAG, Enum::VALUE, Enum::VALUE_LIST, Enum::VALUE_MAP, Enum::VALUE_SET},
+                                 [](Enum e){ return e == T; }))
+    struct enum_value_type {
+        using type = Enum;
+        static constexpr Enum value = T;
+    };
+    template <auto T, typename Enum> constexpr auto enum_value_type_v = enum_value_type<T, Enum>::value;
+
     typedef int argc_t;
     typedef char** argv_t;
 
@@ -149,18 +160,18 @@ namespace argcpp {
         enum class Infliction_Arg_T {
             FLAG,
             VALUE,
+            VALUE_LIST,
+            VALUE_MAP,
+            VALUE_SET,
         };
 
         virtual ~Rule_Set() = default;
-        virtual void apply(std::string x) = 0;
+        enum_value_type<Infliction_Arg_T::FLAG, Infliction_Arg_T> inflict_flag(const Argument& arg) const;
     };
 
     /// @brief defines a ruleset for UNIX style CLI parsing
     class Simple_Rule_Set : public Rule_Set {
     public:
-        void apply(std::string x) override {
-
-        }
     };
 
     template <
