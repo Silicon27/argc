@@ -17,16 +17,32 @@
 
 namespace argcpp {
 
-    template <auto T, typename Enum>
-    requires std::is_enum_v<Enum> and
-            // check if T is part of Enum
-             (std::ranges::any_of(std::array<Enum, 5>{Enum::FLAG, Enum::VALUE, Enum::VALUE_LIST, Enum::VALUE_MAP, Enum::VALUE_SET},
-                                 [](Enum e){ return e == T; }))
-    struct enum_value_type {
-        using type = Enum;
-        static constexpr Enum value = T;
+    // Custom constraint for if Enum if of type
+    template <auto V, typename Enum>
+    requires (std::ranges::any_of(std::array<Enum, 5>{Enum::FLAG, Enum::VALUE, Enum::VALUE_LIST, Enum::VALUE_MAP, Enum::VALUE_SET},
+                             [](Enum e){ return e == V; }))
+    struct is_infliction_arg {
+        static constexpr bool value = true;
     };
-    template <auto T, typename Enum> constexpr auto enum_value_type_v = enum_value_type<T, Enum>::value;
+    template <auto V, typename Enum>
+    constexpr bool is_infliction_arg_v = is_infliction_arg<V, Enum>::value;
+    template <auto, typename>
+    constexpr bool is_infliction_arg_v = false;
+
+    /// @struct enum_value_wrapper
+    /// @brief wraps a value of an enum as a type
+    ///
+    /// @tparam V value of comparison
+    /// @tparam Enum enum of reference, V would be compared to this
+    /// @tparam Constraint Acts as a separate required template that checks if V is part of Enum (user-defined)
+    template <auto V, typename Enum, template <auto, typename> typename Constraint>
+    requires std::is_enum_v<Enum> and Constraint<V, Enum>::value
+    struct enum_value_wrapper {
+        using type = Enum;
+        static constexpr Enum value = V;
+    };
+    template <auto V, typename Enum, template <auto, typename> typename Constraint>
+    constexpr auto enum_value_wrapper_v = enum_value_wrapper<V, Enum, Constraint>::value;
 
     typedef int argc_t;
     typedef char** argv_t;
@@ -166,7 +182,17 @@ namespace argcpp {
         };
 
         virtual ~Rule_Set() = default;
-        enum_value_type<Infliction_Arg_T::FLAG, Infliction_Arg_T> inflict_flag(const Argument& arg) const;
+
+        virtual enum_value_wrapper<Infliction_Arg_T::FLAG, Infliction_Arg_T, is_infliction_arg>
+        inflict_flag(const Argument& arg) const = 0;
+        virtual enum_value_wrapper<Infliction_Arg_T::VALUE, Infliction_Arg_T, is_infliction_arg>
+        inflict_value(const Argument& arg) const = 0;
+        virtual enum_value_wrapper<Infliction_Arg_T::VALUE_LIST, Infliction_Arg_T, is_infliction_arg>
+        inflict_list(const Argument& arg) const = 0;
+        virtual enum_value_wrapper<Infliction_Arg_T::VALUE_MAP, Infliction_Arg_T, is_infliction_arg>
+        inflict_map(const Argument& arg) const = 0;
+        virtual enum_value_wrapper<Infliction_Arg_T::VALUE_SET, Infliction_Arg_T, is_infliction_arg>
+        inflict_set(const Argument& arg) const = 0;
     };
 
     /// @brief defines a ruleset for UNIX style CLI parsing
