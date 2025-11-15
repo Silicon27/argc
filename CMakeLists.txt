@@ -7,4 +7,4 @@ add_executable(argc__ test/main.cpp)
 
 include_directories(
         SYSTEM
-        ${CMAKE_SOURCE_DIR}/src/argc++/)
+        ${CMAKE_SOURCE_DIR}/src/argc--/)
