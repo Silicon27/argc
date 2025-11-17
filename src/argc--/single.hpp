@@ -7,24 +7,60 @@
 #include <unordered_map>
 #include <iostream>
 #include <exception>
+#include <ranges>
 
 namespace argcpp::exceptions {
     class add_argument_error : public std::exception {
+        std::string msg_;
     public:
         explicit add_argument_error(const std::string& msg) : msg_(msg) {}
 
         const char* what() const noexcept override {
             return msg_.c_str();
         }
-    private:
-        std::string msg_;
+
     };
+
+    class push_back_and_replace_error : public std::exception {
+        std::string msg_;
+    public:
+        explicit push_back_and_replace_error(const std::string& msg) : msg_(msg) {}
+
+        const char* what() const noexcept override {
+            return msg_.c_str();
+        }
+    };
+}
+
+namespace argcpp::helper {
+
+    /// replaces the value in some vector if position < vector.size()
+    ///
+    /// adds a value if position == vector.size()
+    ///
+    /// if position > vector.size() we throw
+    template <typename T>
+    void push_back_and_replace(std::vector<T>& v, const int position, T& value) {
+        if (position < 0) {
+            throw exceptions::push_back_and_replace_error("position must be >= 0");
+        }
+        if (position > v.size()) {
+            throw exceptions::push_back_and_replace_error("position out of range, exceeded vector size");
+        }
+
+        if (position < v.size()) {
+            v[position] = value;
+        } else if (position == v.size()) {
+            v.push_back(value);
+        }
+    }
 }
 
 namespace argcpp {
 
     class Value;
     struct Argument;
+    struct Positional;
     class Parser;
 
     class Value {
@@ -43,6 +79,69 @@ namespace argcpp {
             stored_bool = false;
             stored_double = 0.0;
             stored_int = 0;
+        }
+
+        explicit operator bool() const noexcept {
+            return stored_bool;
+        }
+
+        explicit operator double() const noexcept {
+            return stored_double;
+        }
+
+        explicit operator int() const noexcept {
+            return stored_int;
+        }
+
+        explicit operator std::string() const noexcept {
+            return stored_string;
+        }
+
+        explicit operator std::vector<Value>() const noexcept {
+            return stored_values;
+        }
+
+
+        Value& operator=(const std::string& s) {
+            reset();
+            stored_string = s;
+            is_set = true;
+            return *this;
+        }
+
+        Value& operator=(const int i) {
+            reset();
+            stored_int = i;
+            is_set = true;
+            return *this;
+        }
+
+        Value& operator=(const double d) {
+            reset();
+            stored_double = d;
+            is_set = true;
+            return *this;
+        }
+
+        Value& operator=(const bool b) {
+            reset();
+            stored_bool = b;
+            is_set = true;
+            return *this;
+        }
+
+        Value& operator=(const char* s) {
+            reset();
+            stored_string = s;
+            is_set = true;
+            return *this;
+        }
+
+        Value& operator=(const std::vector<Value> &v) {
+            reset();
+            stored_values = v;
+            is_set = true;
+            return *this;
         }
 
 
@@ -138,6 +237,10 @@ namespace argcpp {
         /// @details Zero indicates this is not a positional argument.
         int _position = 0;
 
+        /// @brief Whether argument is positional
+        /// @details implies _position is > 0
+        bool _is_positional = false;
+
         /// @brief Excludes the argument from generated help text.
         /// @details Typically used for deprecated or internal-only options.
         bool _hidden = false;
@@ -172,6 +275,7 @@ namespace argcpp {
         /// @details Corresponds to the user-facing identifier used as --name.
         Argument& long_name(const std::string &long_name) {
             this->_canonical_name = long_name;
+            this->_value_name = long_name;
             return *this;
         }
 
@@ -230,6 +334,8 @@ namespace argcpp {
             this->_required = true;
             return *this;
         }
+
+        Argument& optional();
 
         /// @brief Defines a default value that applies when the user does not supply one.
         /// @details The default is used only if no environment variable or user input overrides it.
@@ -307,13 +413,8 @@ namespace argcpp {
 
         /// @brief Assigns a positional index to the argument.
         /// @details Zero indicates a non-positional (named) argument.
-        Argument& position(const int position) {
-            if (position < 0) {
-                throw exceptions::add_argument_error("positional arguments cannot have negative positions.");
-            }
-            this->_position = position;
-            return *this;
-        }
+        /// @return Reference to the created/inserted Positional object.
+        Positional& position(const int position);
 
         /// @brief Hides the argument from help output.
         /// @details Used for deprecated or private options.
@@ -360,9 +461,121 @@ namespace argcpp {
         friend class Parser;
     };
 
+    struct Positional {
+        // --- identity ---
+        std::string canonical_name_;      // internal name used by Parser
+        std::string value_name_;          // shown in help text (e.g., FILE, PATH)
+
+        // --- metadata ---
+        std::string description_;         // human-readable explanation
+
+        // --- positional semantics ---
+        int position_index_ = 0;          // 0-based physical order
+        bool required_ = true;            // required unless declared optional
+        bool variadic_ = false;           // whether it consumes unlimited remaining args
+
+        // --- values ---
+        int min_values_ = 1;              // usually 1 for simple positionals
+        int max_values_ = 1;              // -1 for unlimited (only allowed for last positional)
+        Value default_value_;              // default if omitted AND optional
+        std::vector<Value> values_;        // collected values after parsing
+
+        // --- validation ---
+        std::vector<std::string> allowed_values_;
+        std::function<bool(const std::string&)> validator_;
+        std::string validation_error_;
+
+        // --- formatting ---
+        char value_delimiter_ = ',';      // allows “a,b,c” as value lists
+
+        // --- environment integration ---
+        std::string env_var_;             // optional: fallback source
+
+        // --- parser bookkeeping ---
+        bool was_provided_ = false;       // track whether user gave it
+
+        // --- builder-style member functions ---
+        Positional& help(const std::string& description) {
+            this->description_ = description;
+            return *this;
+        }
+
+        Positional& name(const std::string& name) {
+            this->canonical_name_ = name;
+            this->value_name_ = name;
+            return *this;
+        }
+
+        Positional& value_name(const std::string& value_name) {
+            this->value_name_ = value_name;
+            return *this;
+        }
+        Positional& default_value(const Value& default_value) {
+            this->default_value_ = default_value;
+            return *this;
+        }
+        Positional& allowed_values(const std::vector<std::string>& allowed_values) {
+            this->allowed_values_ = allowed_values;
+            return *this;
+        }
+        Positional& validate(const std::function<bool(const std::string&)>& validator) {
+            this->validator_ = validator;
+            return *this;
+        }
+        Positional& validation_error_message(const std::string& error_message) {
+            this->validation_error_ = error_message;
+            return *this;
+        }
+        Positional& value_delimiter(const char delimiter) {
+            this->value_delimiter_ = delimiter;
+            return *this;
+        }
+        Positional& env_var(const std::string& env_var) {
+            this->env_var_ = env_var;
+            return *this;
+        }
+        Positional& required() {
+            this->required_ = true;
+            return *this;
+        }
+        Positional& optional() {
+            this->required_ = false;
+            return *this;
+        }
+        // Positional& min_values(int minval) {
+        //     this->min_values_ = minval;
+        //     return *this;
+        // }
+        // Positional& max_values(int maxval) {
+        //     this->max_values_ = maxval;
+        //     return *this;
+        // }
+
+        // TODO make this one range function ^
+        Positional& position_index(int idx) {
+            this->position_index_ = idx;
+            return *this;
+        }
+        Positional& variadic(bool is_variadic = true) {
+            this->variadic_ = is_variadic;
+            return *this;
+        }
+    };
+
     class Parser {
         std::unordered_map<std::string, std::shared_ptr<Argument>> argument_map_;
         std::vector<std::shared_ptr<Argument>> arguments_;
+
+        // required positionals, comes before optionals
+        std::vector<Positional> required_positionals_;
+
+        // optional positionals, always comes last in the command
+        std::vector<Positional> optional_positionals_;
+
+
+        // results
+        std::unordered_map<std::string, Value> results_;
+
         int argc_;
         char **argv_;
 
@@ -377,9 +590,47 @@ namespace argcpp {
             argument_map_[alias] = argument_map_.at(arg._canonical_name);
         }
 
-        friend struct Argument;
-    public:
+        static void remove_prefix(std::string& str) {
+            if (str.starts_with("-")) {
+                str.erase(0, 1);
+            } else if (str.starts_with("--")) {
+                str.erase(0, 2);
+            }
+        }
 
+        void parse_positional_arguments() {
+            // if empty then do nothing
+            if (optional_positionals_.empty() && required_positionals_.empty()) {
+                return;
+            }
+            if (required_positionals_.empty()) {
+                goto optional_positionals_loop;
+            }
+
+            // split into 2 parts, one for loop for required, and one for optional
+            for (auto p : required_positionals_) {
+                if (argv_index == argc_) {
+                    display_help("There are less than required number of positionals");
+                }
+
+                results_[p.canonical_name_] = argv_[argv_index++];
+            }
+
+            if (optional_positionals_.empty()) {
+                return;
+            }
+
+            optional_positionals_loop:
+
+            for (auto p : optional_positionals_) {
+
+            }
+
+        }
+
+        friend struct Argument;
+
+    public:
         Parser(const int argc, char** argv)
             : argc_(argc), argv_(argv), argv_index(0)
         {}
@@ -398,25 +649,23 @@ namespace argcpp {
             return *arg;
         }
 
-        static void remove_prefix(std::string& str) {
-            if (str.starts_with("-")) {
-                str.erase(0, 1);
-            } else if (str.starts_with("--")) {
-                str.erase(0, 2);
-            }
-        }
-        void display_help() {
+        void display_help(
+            std::string condition_message = "" // A helpful message to display alongside the help, empty for no message
+        ) {
 
         }
 
         void parse() {
-            for (; argv_index < this->argc_; argv_index++) {
+            // NOTE before parsing anything, either validate the program name or ignore it
+            argv_index++; // skip
 
+            // NOTE make a solution for positional arguments
+            parse_positional_arguments();
+
+            for (; argv_index < this->argc_; argv_index++) {
                 std::string arg = next();
 
                 remove_prefix(arg);
-
-                // NOTE make a solution for positional arguments
 
                 auto it = argument_map_.find(arg);
 
@@ -424,7 +673,6 @@ namespace argcpp {
                 if (it == argument_map_.end()) { display_help(); return; }
 
                 std::shared_ptr<Argument> argument = it->second;
-
 
 
             }
@@ -445,6 +693,45 @@ namespace argcpp {
         }
         return *this;
     }
+
+    inline Positional& Argument::position(const int position) {
+        if (position < 0) {
+            throw exceptions::add_argument_error("positional arguments must have non-negative positions.");
+        }
+
+        _is_flag = false;
+        _takes_value = false;
+        _required = true;
+        _is_positional = true;
+
+        // add positional argument to vector
+        if (parser_) {
+            Positional p;
+            p.canonical_name_ = this->_canonical_name;
+            helper::push_back_and_replace(parser_->required_positionals_, position, p);
+            this->_position = position;
+            // Return reference to the inserted/updated Positional
+            return parser_->required_positionals_[position];
+        } else {
+            throw exceptions::add_argument_error("No parser associated with this Argument for position().");
+        }
+    }
+
+    inline Argument &Argument::optional() {
+        // if there exists a parser object and `this` is positional,
+        // then we remove the last index of required_positionals and
+        // move it to optional_positionals
+        if (parser_ && this->_is_positional) {
+            const Positional p = parser_->required_positionals_[parser_->optional_positionals_.size() - 1];
+            parser_->optional_positionals_.push_back(p);
+            parser_->required_positionals_.pop_back();
+        }
+        this->_required = false;
+
+
+        return *this;
+    }
+
 }
 
 #endif //SINGLE_HPP
